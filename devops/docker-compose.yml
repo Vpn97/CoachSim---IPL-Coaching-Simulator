@@ -1,0 +1,107 @@
+################################################################
+# CoachSim base compose
+# Used together with docker-compose.dev.yml OR docker-compose.prod.yml.
+# Run from repo root:
+#   docker compose -f devops/docker-compose.yml -f devops/docker-compose.dev.yml \
+#                  --env-file devops/.env.dev up --build
+################################################################
+
+name: coachsim
+
+networks:
+  coachsim_net:
+    name: coachsim_net
+
+volumes:
+  postgres_data:
+  pg_backups:
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-coachsim}
+      POSTGRES_USER: ${POSTGRES_USER:-coachsim}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coachsim}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-coachsim} -d $${POSTGRES_DB:-coachsim}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - coachsim_net
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    environment:
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-dev}
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-coachsim}
+      DB_USER: ${POSTGRES_USER:-coachsim}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-coachsim}
+      JWT_SECRET: ${JWT_SECRET:-change-me-change-me-change-me-change-me}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost,http://localhost:4200}
+      INGESTION_PROVIDER: ${INGESTION_PROVIDER:-mock}
+      EXTERNAL_API_BASE_URL: ${EXTERNAL_API_BASE_URL:-}
+      EXTERNAL_API_KEY: ${EXTERNAL_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - coachsim_net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coachsim_net"
+      # REST API
+      - "traefik.http.routers.coachsim-api.rule=PathPrefix(`/api`) || PathPrefix(`/actuator`)"
+      - "traefik.http.routers.coachsim-api.entrypoints=web"
+      - "traefik.http.services.coachsim-api.loadbalancer.server.port=8080"
+      - "traefik.http.routers.coachsim-api.middlewares=security-headers@file,api-ratelimit@file,compress@file"
+      # WebSocket (sticky)
+      - "traefik.http.routers.coachsim-ws.rule=PathPrefix(`/ws`)"
+      - "traefik.http.routers.coachsim-ws.entrypoints=web"
+      - "traefik.http.routers.coachsim-ws.service=coachsim-ws"
+      - "traefik.http.services.coachsim-ws.loadbalancer.server.port=8080"
+      - "traefik.http.services.coachsim-ws.loadbalancer.sticky.cookie=true"
+      - "traefik.http.services.coachsim-ws.loadbalancer.sticky.cookie.name=coachsim_ws_sticky"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    depends_on:
+      backend:
+        # Wait for the backend's HEALTHCHECK to pass before starting nginx,
+        # so the first /api proxy request never lands during Spring boot.
+        condition: service_healthy
+    networks:
+      - coachsim_net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coachsim_net"
+      - "traefik.http.routers.coachsim-web.rule=PathPrefix(`/`)"
+      - "traefik.http.routers.coachsim-web.entrypoints=web"
+      - "traefik.http.routers.coachsim-web.priority=1"
+      - "traefik.http.services.coachsim-web.loadbalancer.server.port=80"
+      - "traefik.http.routers.coachsim-web.middlewares=security-headers@file,compress@file"
+    restart: unless-stopped
+
+  traefik:
+    image: traefik:v3.1
+    profiles: ["proxy"]
+    command:
+      - --configFile=/etc/traefik/traefik.yml
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+    networks:
+      - coachsim_net
+    restart: unless-stopped

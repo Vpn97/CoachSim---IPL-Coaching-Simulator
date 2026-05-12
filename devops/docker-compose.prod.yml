@@ -1,0 +1,76 @@
+################################################################
+# Prod overlay
+# - TLS via Let's Encrypt (entrypoint :443, HTTP redirect)
+# - External cricket API ingestion (override in .env.prod)
+# - Resource limits, restart policies, nightly pg_dump sidecar
+################################################################
+
+services:
+  postgres:
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  backend:
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      INGESTION_PROVIDER: ${INGESTION_PROVIDER:-external}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+      EXTERNAL_API_BASE_URL: ${EXTERNAL_API_BASE_URL}
+      EXTERNAL_API_KEY: ${EXTERNAL_API_KEY}
+    deploy:
+      replicas: ${BACKEND_REPLICAS:-2}
+      resources:
+        limits:
+          memory: 1g
+    labels:
+      - "traefik.http.routers.coachsim-api.entrypoints=websecure"
+      - "traefik.http.routers.coachsim-api.tls.certresolver=le"
+      - "traefik.http.routers.coachsim-api.rule=Host(`${PUBLIC_HOST}`) && (PathPrefix(`/api`) || PathPrefix(`/actuator`))"
+      - "traefik.http.routers.coachsim-ws.entrypoints=websecure"
+      - "traefik.http.routers.coachsim-ws.tls.certresolver=le"
+      - "traefik.http.routers.coachsim-ws.rule=Host(`${PUBLIC_HOST}`) && PathPrefix(`/ws`)"
+
+  frontend:
+    labels:
+      - "traefik.http.routers.coachsim-web.entrypoints=websecure"
+      - "traefik.http.routers.coachsim-web.tls.certresolver=le"
+      - "traefik.http.routers.coachsim-web.rule=Host(`${PUBLIC_HOST}`)"
+
+  traefik:
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL}
+    ports:
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - traefik_acme:/etc/traefik/acme
+
+  pg-backup:
+    image: postgres:16-alpine
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    volumes:
+      - pg_backups:/backups
+      - ./backups/pg-dump.sh:/usr/local/bin/pg-dump.sh:ro
+    entrypoint: ["sh", "-c", "while true; do /usr/local/bin/pg-dump.sh; sleep 86400; done"]
+    networks:
+      - coachsim_net
+    restart: unless-stopped
+
+volumes:
+  traefik_acme:

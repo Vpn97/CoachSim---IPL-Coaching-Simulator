@@ -1,0 +1,28 @@
+################################################################
+# Traefik dynamic configuration — TLS options + middlewares
+# Loaded by the file provider configured in traefik.yml.
+################################################################
+
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: false
+
+http:
+  middlewares:
+    security-headers:
+      headers:
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+    api-ratelimit:
+      rateLimit:
+        average: 100
+        burst: 50
+        period: 1s
+    compress:
+      compress: {}

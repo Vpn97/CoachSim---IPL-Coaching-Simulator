@@ -1,0 +1,33 @@
+################################################################
+# Traefik static configuration — dev overlay
+# No TLS, dashboard exposed on :8088, no HTTPS redirect.
+################################################################
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+api:
+  dashboard: true
+  insecure: true
+
+ping:
+  entryPoint: web
+
+entryPoints:
+  web:
+    address: ":80"
+  traefik:
+    address: ":8088"
+
+providers:
+  docker:
+    exposedByDefault: false
+    network: coachsim_net
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+log:
+  level: DEBUG
+accessLog: {}

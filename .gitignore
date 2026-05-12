@@ -1,0 +1,30 @@
+# Java / Gradle
+backend/build/
+backend/.gradle/
+backend/out/
+backend/bin/
+*.class
+
+# Node / Angular
+frontend/node_modules/
+frontend/dist/
+frontend/.angular/
+frontend/out-tsc/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (env files real, examples are tracked)
+devops/.env.dev
+devops/.env.prod
+devops/traefik/acme.json
+
+# Logs
+*.log

@@ -1,0 +1,36 @@
+package com.coachsim.match;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.List;
+import java.util.Optional;
+
+public interface BallRepository extends JpaRepository<Ball, Long> {
+
+    List<Ball> findByInningsIdOrderByOverNumAscBallInOverAsc(Long inningsId);
+
+    Optional<Ball> findFirstByInningsIdOrderByOverNumDescBallInOverDesc(Long inningsId);
+
+    @Query("""
+           SELECT COALESCE(AVG(b.runs + b.extras), 0)
+           FROM Ball b
+           WHERE b.bowlerType = :bowlerType
+             AND b.batterHand = :batterHand
+             AND b.overPhase  = :phase
+           """)
+    double avgRunsPerBall(@Param("bowlerType") Ball.BowlerType bowlerType,
+                          @Param("batterHand") Ball.BatterHand batterHand,
+                          @Param("phase") Ball.OverPhase phase);
+
+    @Query("""
+           SELECT COUNT(b) FROM Ball b
+           WHERE b.bowlerType = :bowlerType
+             AND b.batterHand = :batterHand
+             AND b.overPhase  = :phase
+           """)
+    long countHistorical(@Param("bowlerType") Ball.BowlerType bowlerType,
+                         @Param("batterHand") Ball.BatterHand batterHand,
+                         @Param("phase") Ball.OverPhase phase);
+}

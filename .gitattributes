@@ -1,0 +1,29 @@
+# Default: normalise to LF in the repo, restore platform-native on checkout.
+* text=auto eol=lf
+
+# Force LF on shell, gradle, and other Unix-executed scripts even when checked
+# out on Windows — otherwise bash chokes on the trailing \r.
+*.sh        text eol=lf
+*.bash      text eol=lf
+gradlew     text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Dockerfile  text eol=lf
+*.dockerfile text eol=lf
+
+# Keep Windows scripts and batch files as CRLF.
+*.ps1       text eol=crlf
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+
+# Binary files.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.jar  binary
+*.war  binary
+*.zip  binary
+*.gz   binary
