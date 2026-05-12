@@ -325,7 +325,11 @@ public class AutoPlaySimulator {
     private SimState resumeFromDb(long matchId, Innings firstInnings) {
         SimState s = new SimState();
         Optional<Ball> last = balls.findFirstByInningsIdOrderByOverNumDescBallInOverDesc(firstInnings.getId());
-        s.overNum = last.map(Ball::getOverNum).orElse((short) 0);
+        // For an empty innings we default the cursor to (over=1, ball=0) so
+        // the very first tick increments to (1, 1) — a real cricket over.
+        // Previously the (0, 0) default produced balls labelled "over 0.X"
+        // which surfaced on the scoreboard.
+        s.overNum = last.map(Ball::getOverNum).orElse((short) 1);
         s.ballInOver = last.map(Ball::getBallInOver).orElse((short) 0);
         return s;
     }
