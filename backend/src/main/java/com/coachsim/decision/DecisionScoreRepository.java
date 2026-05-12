@@ -18,4 +18,19 @@ public interface DecisionScoreRepository extends JpaRepository<DecisionScore, Lo
            ORDER BY s.computedAt DESC
            """)
     List<DecisionScore> findRecentForUser(@Param("userId") Long userId);
+
+    /**
+     * All of a user's scored decisions for one match, newest first.
+     * Powers the per-match "running total" panel on the live page.
+     */
+    @Query("""
+           SELECT s FROM DecisionScore s
+           JOIN FanDecision d ON d.id = s.fanDecisionId
+           JOIN DecisionWindow w ON w.id = d.windowId
+           WHERE d.userId = :userId
+             AND w.matchId = :matchId
+           ORDER BY s.computedAt DESC
+           """)
+    List<DecisionScore> findForUserInMatch(@Param("userId") Long userId,
+                                           @Param("matchId") Long matchId);
 }

@@ -139,24 +139,74 @@ public class AutoPlaySimulator {
                         runs, 0, wicket, wicket ? "BOWLED" : null))
                 .build());
 
-        // Every 12 balls (~2 overs) push a captain move for the *next* ball.
-        if ((s.overNum * 6 + s.ballInOver) % 12 == 0) {
-            short nextOver = (short) (s.ballInOver == 6 ? s.overNum + 1 : s.overNum);
-            short nextBall = (short) (s.ballInOver == 6 ? 1 : s.ballInOver + 1);
-            ingestion.ingest(MatchEvent.builder()
-                    .type(MatchEvent.Type.CAPTAIN_MOVE)
-                    .matchId(matchId)
-                    .overNum(nextOver)
-                    .ballInOver(nextBall)
-                    .captain(new MatchEvent.CaptainPayload(
-                            CaptainMove.MoveType.BOWLING_CHANGE,
-                            Map.of(
-                                    "bowler", bowler,
-                                    "bowlerType", bowlerType.name(),
-                                    "batterHand", hand.name()
-                            )))
-                    .build());
-        }
+        // Captain move for the NEXT ball — published every single ball so every
+        // submitted fan decision gets resolved & scored within seconds (the user
+        // wants per-ball scoring during the live demo, not "wait for the over").
+        // We rotate the captain's bowler/field every couple of overs so the
+        // tactical merit verdicts vary instead of always agreeing with the fan.
+        short nextOver = (short) (s.ballInOver == 6 ? s.overNum + 1 : s.overNum);
+        short nextBall = (short) (s.ballInOver == 6 ? 1 : s.ballInOver + 1);
+        publishCaptainMoves(matchId, nextOver, nextBall, bowler, bowlerType, hand, s);
+    }
+
+    /**
+     * Publish one BOWLING_CHANGE and one FIELD_SET for the next ball.
+     * The "captain" is intentionally not always identical to the last bowler —
+     * we vary by phase + a small randomness so the rules engine produces
+     * meaningfully different verdicts each ball.
+     */
+    private void publishCaptainMoves(long matchId, short nextOver, short nextBall,
+                                     String lastBowler, Ball.BowlerType lastType,
+                                     Ball.BatterHand hand, SimState s) {
+        Ball.OverPhase nextPhase = Ball.phaseForOver(nextOver);
+        Ball.BowlerType captainBowlerType;
+        String captainBowler;
+
+        // Phase-aware captain choice: pace in powerplay/death, spin in middle.
+        // 30% of the time the captain "rotates" (different type) to surprise the fan.
+        boolean rotate = s.rng.nextInt(10) < 3;
+        boolean wantPace = nextPhase != Ball.OverPhase.MIDDLE;
+        if (rotate) wantPace = !wantPace;
+        captainBowlerType = wantPace ? Ball.BowlerType.PACE : Ball.BowlerType.SPIN;
+        captainBowler = wantPace
+                ? PACE_BOWLERS[(s.overNum + s.ballInOver) % PACE_BOWLERS.length]
+                : SPIN_BOWLERS[(s.overNum + s.ballInOver) % SPIN_BOWLERS.length];
+
+        ingestion.ingest(MatchEvent.builder()
+                .type(MatchEvent.Type.CAPTAIN_MOVE)
+                .matchId(matchId)
+                .overNum(nextOver)
+                .ballInOver(nextBall)
+                .captain(new MatchEvent.CaptainPayload(
+                        CaptainMove.MoveType.BOWLING_CHANGE,
+                        Map.of(
+                                "bowler", captainBowler,
+                                "bowlerType", captainBowlerType.name(),
+                                "batterHand", hand.name()
+                        )))
+                .build());
+
+        // Captain's field — a small set of "hot zones" the rules engine can
+        // compare fan coverage against. Phase-aware: powerplay defends covers/point,
+        // middle defends mid-wicket/long-on, death defends straight + leg-deep.
+        List<String> hotZones = switch (nextPhase) {
+            case POWERPLAY -> List.of("COVERS", "POINT", "MID_OFF", "MID_WICKET");
+            case MIDDLE    -> List.of("MID_WICKET", "MID_ON", "COVERS", "SQUARE_LEG");
+            case DEATH     -> List.of("MID_OFF", "MID_ON", "FINE_LEG", "MID_WICKET", "THIRD_MAN");
+        };
+        ingestion.ingest(MatchEvent.builder()
+                .type(MatchEvent.Type.CAPTAIN_MOVE)
+                .matchId(matchId)
+                .overNum(nextOver)
+                .ballInOver(nextBall)
+                .captain(new MatchEvent.CaptainPayload(
+                        CaptainMove.MoveType.FIELD_SET,
+                        Map.of(
+                                "batterHand", hand.name(),
+                                "batterTopZones", hotZones,
+                                "phase", nextPhase.name()
+                        )))
+                .build());
     }
 
     private int chooseRuns(SimState s) {

@@ -59,6 +59,23 @@ public class DecisionController {
                                Map<String, Object> myPayload,
                                Instant submittedAt) {}
 
+    /**
+     * Snapshot of a fan's running performance in a single match. Drives the
+     * live-page "your tactical merit so far" banner. Pure aggregate over the
+     * per-decision scores already produced after every captain move.
+     */
+    public record MyScoreResponse(
+            Long matchId,
+            long totalScore,
+            int decisionsScored,
+            int decisionsPending,   // submitted but window not yet resolved
+            double averageScore,
+            int bestScore,
+            Integer lastScore,
+            Map<String, Object> lastBreakdown,
+            Instant lastScoredAt
+    ) {}
+
     @PostMapping
     public ResponseEntity<SubmitResponse> submit(@AuthenticationPrincipal AuthPrincipal principal,
                                                  @Valid @RequestBody SubmitRequest req) {
@@ -98,6 +115,40 @@ public class DecisionController {
                 .map(WindowView::from).toList();
     }
 
+    @GetMapping("/my-score")
+    public MyScoreResponse myScore(@AuthenticationPrincipal AuthPrincipal principal,
+                                   @RequestParam("matchId") Long matchId) {
+        List<DecisionScore> mine = scores.findForUserInMatch(principal.id(), matchId);
+        long total = mine.stream().mapToLong(DecisionScore::getMeritScore).sum();
+        int count = mine.size();
+        int best = mine.stream().mapToInt(DecisionScore::getMeritScore).max().orElse(0);
+        double avg = count == 0 ? 0 : (double) total / count;
+        DecisionScore latest = mine.isEmpty() ? null : mine.get(0);
+
+        // Submitted decisions for this match whose window hasn't been resolved yet
+        // (no DecisionScore row). Counted via a small in-memory diff to keep the
+        // endpoint cheap — the working set per fan per match is tiny.
+        List<FanDecision> myDecisions = fanDecisions.findByUserIdOrderBySubmittedAtDesc(principal.id());
+        long submittedForMatch = myDecisions.stream()
+                .filter(d -> windows.findById(d.getWindowId())
+                        .map(w -> matchId.equals(w.getMatchId()))
+                        .orElse(false))
+                .count();
+        int pending = Math.max(0, (int) submittedForMatch - count);
+
+        return new MyScoreResponse(
+                matchId,
+                total,
+                count,
+                pending,
+                avg,
+                best,
+                latest != null ? latest.getMeritScore() : null,
+                latest != null ? latest.getBreakdown() : null,
+                latest != null ? latest.getComputedAt() : null
+        );
+    }
+
     @GetMapping("/history")
     public List<HistoryEntry> myHistory(@AuthenticationPrincipal AuthPrincipal principal) {
         List<FanDecision> mine = fanDecisions.findByUserIdOrderBySubmittedAtDesc(principal.id());
@@ -128,9 +179,12 @@ public class DecisionController {
             }
             case FIELD_SET -> {
                 Object positions = p.get("positions");
-                if (!(positions instanceof List<?> list) || list.size() != 9) {
+                // The new visual ground UI lets fans place any subset of fielders
+                // (presets give 8, custom can go from 4 up to 9). We only insist
+                // on a sensible minimum so empty submissions are still rejected.
+                if (!(positions instanceof List<?> list) || list.size() < 4 || list.size() > 9) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                            "Field set requires 9 fielding positions (excluding bowler + keeper)");
+                            "Field set requires between 4 and 9 fielding positions");
                 }
                 long legSideOutsideCircle = list.stream()
                         .filter(o -> o instanceof Map<?, ?>)

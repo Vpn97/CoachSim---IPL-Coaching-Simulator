@@ -110,7 +110,14 @@ const PRESETS: Preset[] = [
   imports: [CommonModule, FormsModule, GroundComponent],
   template: `
     <div class="card panel">
-      <header>
+      <!--
+        The card uses a sticky top action-bar that holds: the title, the
+        live countdown, AND the submit button. Under a 15-second timer the
+        most important control (submit) must always be in the user's eye
+        line — so we anchor it at the top and let the chips/ground scroll
+        below if the viewport is small.
+      -->
+      <header class="action-bar">
         <div class="title-row">
           <h3>
             {{ window.type === 'BOWLING_CHANGE' ? 'Pick your bowler' : 'Set your field' }}
@@ -127,10 +134,17 @@ const PRESETS: Preset[] = [
             </div>
           </div>
         </div>
-        <p *ngIf="window.type === 'BOWLING_CHANGE'" class="muted small">
+
+        <button class="submit-btn top"
+                (click)="onSubmit()"
+                [disabled]="!canSubmit()">
+          {{ submitLabel() }}
+        </button>
+
+        <p *ngIf="window.type === 'BOWLING_CHANGE'" class="muted small hint">
           Tap any bowler — one tap commits the choice.
         </p>
-        <p *ngIf="window.type === 'FIELD_SET'" class="muted small">
+        <p *ngIf="window.type === 'FIELD_SET'" class="muted small hint">
           Tap a position on the ground to drop a fielder. Or start from a preset.
         </p>
       </header>
@@ -208,17 +222,22 @@ const PRESETS: Preset[] = [
           </span>
         </div>
       </ng-container>
-
-      <button class="submit-btn"
-              (click)="onSubmit()"
-              [disabled]="!canSubmit()">
-        {{ submitLabel() }}
-      </button>
     </div>
   `,
   styles: [`
     /* ---------- Layout & header ---------- */
-    .panel header { margin-bottom: 0.5rem; }
+    .panel { display: flex; flex-direction: column; gap: 0.75rem; }
+    .action-bar {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      background: var(--panel);
+      padding: 0.1rem 0 0.75rem;
+      margin-bottom: 0.25rem;
+      border-bottom: 1px solid var(--border);
+      display: flex; flex-direction: column; gap: 0.5rem;
+    }
+    .action-bar .hint { margin: 0; }
     .title-row {
       display: flex; align-items: center; justify-content: space-between; gap: 1rem;
     }
@@ -342,13 +361,16 @@ const PRESETS: Preset[] = [
     /* ---------- Submit ---------- */
     .submit-btn {
       width: 100%;
-      margin-top: 0.75rem;
       padding: 0.85rem 1rem;
       font-size: 1rem;
       background: linear-gradient(90deg, var(--accent), var(--accent-2));
       color: #1b1305;
+      box-shadow: 0 2px 10px rgba(255, 122, 24, 0.25);
     }
-    .submit-btn:disabled { background: var(--panel-2); color: var(--muted); }
+    .submit-btn.top { margin: 0; }
+    .submit-btn:disabled {
+      background: var(--panel-2); color: var(--muted); box-shadow: none;
+    }
   `]
 })
 export class DecisionPanelComponent {

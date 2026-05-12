@@ -46,7 +46,12 @@ public class SecurityConfig {
                     "/actuator/health/**",
                     "/actuator/info",
                     "/actuator/prometheus",
-                    "/ws/**"
+                    "/ws/**",
+                    // Spring Boot internally FORWARDs to /error when a controller
+                    // throws. The forward does NOT carry the original Authorization
+                    // header, so without permitting /error the actual status code
+                    // (e.g. 400/409) is masked as 403 by Http403ForbiddenEntryPoint.
+                    "/error"
                 ).permitAll()
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 .anyRequest().authenticated()
