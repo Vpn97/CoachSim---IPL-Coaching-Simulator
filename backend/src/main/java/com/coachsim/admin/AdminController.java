@@ -130,12 +130,28 @@ public class AdminController {
         } catch (IllegalArgumentException ex) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, ex.getMessage());
         }
-        return ResponseEntity.accepted().body(new AutoPlayStatus(id, true));
+        // Report the simulator's actual running state. Returning a hardcoded
+        // `true` used to mask "Start succeeded but the cursor was past the cap
+        // so the loop immediately auto-stopped" as a healthy start — the UI
+        // then showed RUNNING even though nothing was happening.
+        return ResponseEntity.accepted().body(new AutoPlayStatus(id, simulator.isRunning(id)));
     }
 
     @PostMapping("/matches/{id}/auto-play/stop")
     public ResponseEntity<AutoPlayStatus> stopAutoPlay(@PathVariable Long id) {
         simulator.stop(id);
+        return ResponseEntity.ok(new AutoPlayStatus(id, simulator.isRunning(id)));
+    }
+
+    /**
+     * Clears the simulator's in-memory ball cursor for this match. Useful in
+     * conjunction with the auto-wrap on start: combined, an admin can replay
+     * the same demo match over and over without ever needing a DB reset.
+     */
+    @PostMapping("/matches/{id}/auto-play/reset")
+    public ResponseEntity<AutoPlayStatus> resetAutoPlay(@PathVariable Long id) {
+        simulator.stop(id);
+        simulator.resetState(id);
         return ResponseEntity.ok(new AutoPlayStatus(id, false));
     }
 

@@ -55,7 +55,7 @@ import { MatchService, MatchSummary } from '../../core/match.service';
       <p class="muted small">Generates a ball every few seconds and a captain move every ball — perfect for live-feeling demos without a paid ball-by-ball API.</p>
 
       <!-- Authoritative status pulled from the backend (auto-polled). This
-           replaces the old local-only `autoPlay.running` flag that quietly
+           replaces the old local-only autoPlay.running flag that quietly
            went out of sync after a refresh / cross-tab change and allowed
            admins to accidentally double-start the simulation. -->
       <div class="status-row">
@@ -70,6 +70,9 @@ import { MatchService, MatchSummary } from '../../core/match.service';
       </div>
       <button (click)="startAutoPlay(m.id)" [disabled]="isSelectedRunning()">Start auto-play</button>
       <button (click)="stopAutoPlay(m.id)" [disabled]="!isSelectedRunning()" style="margin-left:0.5rem; background: var(--panel-2); color: var(--text)">Stop</button>
+      <button (click)="resetAutoPlay(m.id)" title="Clear in-memory cursor — useful if Start says it auto-stopped" style="margin-left:0.5rem; background: var(--panel-2); color: var(--text)">Reset cursor</button>
+
+      <p class="error-msg small" *ngIf="autoPlayError() as err">{{ err }}</p>
 
       <h4 style="margin-top:1.5rem">Push ball manually</h4>
       <div class="grid">
@@ -145,6 +148,14 @@ import { MatchService, MatchSummary } from '../../core/match.service';
     @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.45;} }
 
     .status-row { margin: 0.5rem 0 0.75rem; }
+    .error-msg {
+      margin-top: 0.6rem;
+      padding: 0.5rem 0.75rem;
+      border-radius: 8px;
+      background: rgba(248,113,113,0.12);
+      border: 1px solid rgba(248,113,113,0.35);
+      color: #fca5a5;
+    }
   `]
 })
 export class AdminComponent implements OnInit, OnDestroy {
@@ -211,18 +222,50 @@ export class AdminComponent implements OnInit, OnDestroy {
     this.refreshAutoPlayMap();
   }
 
+  autoPlayError = signal<string | null>(null);
+
   startAutoPlay(matchId: number): void {
+    this.autoPlayError.set(null);
     this.http.post<{ matchId: number; running: boolean }>(
       `/api/admin/matches/${matchId}/auto-play/start`,
       { ballEverySeconds: this.autoPlay.intervalSeconds }
-    ).subscribe(() => this.refreshAutoPlayMap());
+    ).subscribe(s => {
+      // Patch the map immediately from the start response so the badge flips
+      // to RUNNING (or stays idle) without waiting for the 5s poll. Also
+      // surface the "started but immediately auto-stopped" case (the
+      // simulator hit its over cap) so the admin knows to Reset.
+      this.autoPlayMap.update(m => ({ ...m, [matchId]: s.running }));
+      if (!s.running) {
+        this.autoPlayError.set(
+          `Auto-play started but immediately stopped — match #${matchId} is past the ${this.maxOvers}-over simulator cap. Click "Reset cursor" and try again.`
+        );
+      }
+      this.refreshAutoPlayMap();
+    });
   }
 
   stopAutoPlay(matchId: number): void {
+    this.autoPlayError.set(null);
     this.http.post<{ matchId: number; running: boolean }>(
       `/api/admin/matches/${matchId}/auto-play/stop`, {}
-    ).subscribe(() => this.refreshAutoPlayMap());
+    ).subscribe(s => {
+      this.autoPlayMap.update(m => ({ ...m, [matchId]: s.running }));
+      this.refreshAutoPlayMap();
+    });
   }
+
+  resetAutoPlay(matchId: number): void {
+    this.autoPlayError.set(null);
+    this.http.post<{ matchId: number; running: boolean }>(
+      `/api/admin/matches/${matchId}/auto-play/reset`, {}
+    ).subscribe(s => {
+      this.autoPlayMap.update(m => ({ ...m, [matchId]: s.running }));
+      this.refreshAutoPlayMap();
+    });
+  }
+
+  /** Informational only — kept in sync with `MAX_OVERS` in AutoPlaySimulator. */
+  readonly maxOvers = 20;
 
   pushBall(matchId: number): void {
     this.http.post('/api/admin/balls', { ...this.ball, matchId }).subscribe(() => {

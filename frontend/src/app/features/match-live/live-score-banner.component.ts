@@ -97,7 +97,7 @@ import { MyScore, ScoreBreakdown } from '../../core/match.service';
   `,
   styles: [`
     /*
-      Non-sticky: an earlier version pinned this with `position: sticky; top: 0`
+      Non-sticky: an earlier version pinned this with position:sticky; top:0
       to keep the score visible while scrolling. That collided with the global
       topbar (also sticky at top:0, z-index 10) and the banner ended up hidden
       behind the topbar — making the page appear empty on some screen heights.

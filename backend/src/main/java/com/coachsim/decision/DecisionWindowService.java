@@ -112,6 +112,17 @@ public class DecisionWindowService {
         List<FanDecision> decisions = fanDecisions.findByWindowId(windowId);
         for (FanDecision d : decisions) {
             try {
+                // Idempotency guard: a decision_score is unique per fan_decision.
+                // In the auto-play "replay" demo flow the same captain move can
+                // be ingested again for an already-resolved window, so we skip
+                // re-scoring instead of letting the unique constraint blow up
+                // (which used to corrupt the autoplay tick transaction and
+                // surface as "Transaction silently rolled back" errors).
+                if (scores.findByFanDecisionId(d.getId()).isPresent()) {
+                    log.debug("Decision {} already scored — skipping re-score", d.getId());
+                    continue;
+                }
+
                 MeritScore score = scoring.score(win, d, captainMoveId);
                 DecisionScore saved = scores.save(DecisionScore.builder()
                         .fanDecisionId(d.getId())

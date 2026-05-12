@@ -88,6 +88,10 @@ interface BallChip {
       <!-- =================== Main column =================== -->
       <section class="main">
 
+        <!-- Transient submit-failure toast (409 = window closed, 400 = bad
+             payload, etc.). Auto-dismisses after a few seconds. -->
+        <div class="toast" *ngIf="submitToast() as t">{{ t }}</div>
+
         <!-- Sticky running-score banner (the user-facing summary the demo
              wants pinned at the top of the live match page). -->
         <cs-live-score-banner
@@ -274,6 +278,21 @@ interface BallChip {
     /* ---------- Waiting card ---------- */
     .waiting { display: flex; flex-direction: column; gap: 0.75rem; align-items: stretch; }
     .waiting-head h3 { margin: 0; }
+
+    /* ---------- Submit-failure toast ---------- */
+    .toast {
+      padding: 0.6rem 0.9rem;
+      border-radius: 10px;
+      background: rgba(248,113,113,0.15);
+      border: 1px solid rgba(248,113,113,0.4);
+      color: #fca5a5;
+      font-size: 0.9rem;
+      animation: toastIn 0.25s ease-out;
+    }
+    @keyframes toastIn {
+      from { opacity: 0; transform: translateY(-6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
   `]
 })
 export class LiveMatchComponent implements OnInit, OnDestroy {
@@ -472,9 +491,35 @@ export class LiveMatchComponent implements OnInit, OnDestroy {
     });
   }
 
+  /** Transient toast for submit failures so 409/4xx don't disappear silently. */
+  submitToast = signal<string | null>(null);
+  private submitToastTimer?: ReturnType<typeof setTimeout>;
+
   submitDecision(window: WindowEvent, payload: DecisionPayload): void {
     this.matchSvc.submitDecision(window.windowId, payload as unknown as Record<string, unknown>)
-      .subscribe({ next: () => this.activeWindow.set(null) });
+      .subscribe({
+        next: () => this.activeWindow.set(null),
+        error: e => {
+          // 409 = window already closed (captain move came in / window expired).
+          // 400 = payload validation failure (e.g. <4 fielders for FIELD_SET).
+          // Either way, surface a brief toast so the user knows the click did
+          // something — and clear the active window so the page returns to
+          // "waiting for next decision".
+          const status = (e as { status?: number })?.status;
+          let msg = `Submit failed (HTTP ${status ?? '???'}).`;
+          if (status === 409) msg = `Too late! The captain already made the call — wait for the next ball.`;
+          else if (status === 400) msg = `Invalid decision: ${(e as { error?: { message?: string } })?.error?.message ?? 'check your selections.'}`;
+          else if (status === 401) msg = `Please sign in to submit decisions.`;
+          this.flashToast(msg);
+          if (status === 409) this.activeWindow.set(null);
+        }
+      });
+  }
+
+  private flashToast(msg: string): void {
+    this.submitToast.set(msg);
+    clearTimeout(this.submitToastTimer);
+    this.submitToastTimer = setTimeout(() => this.submitToast.set(null), 4000);
   }
 
   overText(legalBalls: number): string {
