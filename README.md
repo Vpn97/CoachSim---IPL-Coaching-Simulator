@@ -54,6 +54,26 @@ loop on every single ball.
 > The external adapter is fully wired; swapping providers is a single env-var
 > change + container restart with no client-side changes.
 
+### Screenshots
+
+**1. Live page — sticky tactical-merit banner + scoreboard + read-only cricket ground**
+
+The banner shows running totals (290 pts across 10 scored decisions, avg 29.0, best 29) and the last-ball score breakdown (Field Coverage 20/20, Exact Match 0/50). The scoreboard reflects each new ball within milliseconds over WebSocket.
+
+![Live page — banner, scoreboard, recent ball strip and read-only ground](docs/screenshots/01-live-banner-and-scorecard.png)
+
+**2. Decision panel — field-set with the visual cricket ground**
+
+When a decision window opens, the panel slides in with a circular countdown timer (top right), preset formations (Powerplay / Attacking / Defensive / Death) and the visual ground. Tap any zone to drop a fielder; tap again to convert from inner-ring to boundary rider. The sticky Submit button stays in view under time pressure.
+
+![Decision panel — visual cricket ground with preset formations](docs/screenshots/02-decision-panel-field-set.png)
+
+**3. Side-by-side demo flow — admin drives, fan plays along**
+
+Left: a fan sees a fresh decision window and the ground for the next ball. Right: the admin panel shows the *Auto-play is RUNNING* badge for match #35, live-matches table with RUNNING/idle indicators per match, and the manual Push ball / Reveal captain move forms for fine-grained control.
+
+![Admin and fan windows side by side during a live simulation](docs/screenshots/03-admin-and-fan-side-by-side.png)
+
 ---
 
 ## How the demo runs (no real IPL fixture required)
