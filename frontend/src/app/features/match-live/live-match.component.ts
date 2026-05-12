@@ -1,11 +1,13 @@
 import { Component, OnInit, OnDestroy, inject, signal, computed } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { Subscription, interval } from 'rxjs';
-import { MatchService, MatchSummary, LiveState, WindowView } from '../../core/match.service';
+import { MatchService, MatchSummary, LiveState, WindowView, BallView } from '../../core/match.service';
 import { WebSocketService } from '../../core/websocket.service';
 import { DecisionPanelComponent, DecisionPayload } from './decision-panel.component';
 import { RevealComponent, RevealResult } from './reveal.component';
+import { GroundComponent } from './ground.component';
 
 interface WindowEvent {
   windowId: number;
@@ -17,80 +19,217 @@ interface WindowEvent {
   secondsRemaining: number;
 }
 
+/** Most recent N balls per innings for the live "ball strip" footer of the scoreboard. */
+interface BallChip {
+  over: number;
+  ball: number;
+  runs: number;
+  wicket: boolean;
+}
+
 @Component({
   selector: 'cs-live-match',
   standalone: true,
-  imports: [CommonModule, FormsModule, DecisionPanelComponent, RevealComponent],
+  imports: [CommonModule, FormsModule, RouterLink, DecisionPanelComponent, RevealComponent, GroundComponent],
   template: `
+    <!-- Empty state -->
     <div *ngIf="matches().length === 0" class="empty card">
+      <div class="empty-emoji">🏏</div>
       <h3>No live matches right now</h3>
-      <p class="muted">Check back during an IPL fixture, or ask an admin to create a mock match.</p>
+      <p class="muted">Check back during an IPL fixture, or ask an admin to spin up a mock match from the
+        <a routerLink="/admin">Admin panel</a>.</p>
     </div>
 
     <div *ngIf="matches().length > 0" class="layout">
-      <aside class="card">
-        <h4>Live matches</h4>
+
+      <!-- =================== Sidebar: match picker =================== -->
+      <aside class="card sidebar">
+        <h4 class="sidebar-title">Live matches</h4>
         <ul class="match-list">
           <li *ngFor="let m of matches()"
               [class.active]="selectedMatchId() === m.id"
               (click)="select(m.id)">
-            <strong>{{ m.homeTeam }}</strong> vs <strong>{{ m.awayTeam }}</strong>
-            <span class="muted small">{{ m.venue }}</span>
+            <div class="teams-row">
+              <strong>{{ m.homeTeam }}</strong>
+              <span class="vs">vs</span>
+              <strong>{{ m.awayTeam }}</strong>
+            </div>
+            <span class="muted small">
+              <span class="dot" [class.live]="m.status === 'LIVE'"></span>
+              {{ m.venue || 'Neutral venue' }}
+            </span>
           </li>
         </ul>
       </aside>
 
+      <!-- =================== Main column =================== -->
       <section class="main">
+
+        <!-- Scoreboard -->
         <div class="card scoreboard" *ngIf="state() as s">
-          <div class="teams">
-            <h2>{{ s.match.homeTeam }} vs {{ s.match.awayTeam }}</h2>
-            <span class="muted">{{ s.match.venue }} · {{ s.match.season }}</span>
+          <div class="header">
+            <div>
+              <h2>{{ s.match.homeTeam }} <span class="muted">vs</span> {{ s.match.awayTeam }}</h2>
+              <span class="muted small">{{ s.match.venue }} · {{ s.match.season }}</span>
+            </div>
+            <span class="status-pill" [attr.data-status]="s.match.status">{{ s.match.status }}</span>
           </div>
-          <div class="scores">
-            <div *ngFor="let inn of s.innings" class="innings">
-              <div class="team">{{ inn.battingTeam }}</div>
-              <div class="runs">
-                {{ inn.totalRuns }}/{{ inn.wickets }}
-                <span class="muted small">({{ overText(inn.legalBalls) }})</span>
+
+          <div class="innings-grid">
+            <div *ngFor="let inn of s.innings" class="innings-card">
+              <div class="inn-team muted">{{ inn.battingTeam }}</div>
+              <div class="inn-runs">
+                {{ inn.totalRuns }}<span class="slash">/</span><span class="wkts">{{ inn.wickets }}</span>
+                <span class="inn-overs muted">({{ overText(inn.legalBalls) }})</span>
               </div>
-              <div *ngIf="inn.lastBall" class="last-ball muted small">
-                Last: {{ inn.lastBall.over }}.{{ inn.lastBall.ballInOver }}
-                — {{ inn.lastBall.bowler }} to {{ inn.lastBall.batter }},
-                {{ inn.lastBall.runs }}{{ inn.lastBall.wicket ? ' W' : '' }}
+              <div *ngIf="inn.lastBall as lb" class="inn-last">
+                <span class="muted">Last:</span>
+                <strong>{{ lb.over }}.{{ lb.ballInOver }}</strong>
+                <span>{{ lb.bowler }} → {{ lb.batter }}</span>
+                <span class="runs-chip" [attr.data-runs]="lb.runs" [class.wicket]="lb.wicket">
+                  {{ lb.wicket ? 'W' : lb.runs }}
+                </span>
               </div>
+            </div>
+          </div>
+
+          <!-- Ball strip: last 6 balls of the current innings -->
+          <div class="ball-strip" *ngIf="lastBalls().length">
+            <span class="strip-label muted small">Recent balls</span>
+            <div class="chips">
+              <span *ngFor="let b of lastBalls()"
+                    class="ball-chip"
+                    [class.wicket]="b.wicket"
+                    [attr.data-runs]="b.runs"
+                    [title]="b.over + '.' + b.ball">
+                {{ b.wicket ? 'W' : b.runs }}
+              </span>
             </div>
           </div>
         </div>
 
+        <!-- Decision panel (active window) -->
         <cs-decision-panel
           *ngIf="activeWindow() as w"
           [window]="w"
           [secondsRemaining]="secondsRemaining()"
+          [windowLengthSeconds]="windowLengthSeconds()"
           (submit)="submitDecision(w, $event)">
         </cs-decision-panel>
 
-        <div class="card" *ngIf="!activeWindow()">
-          <h3>Waiting for the next decision window…</h3>
-          <p class="muted">A new window opens after each ball.</p>
+        <!-- Idle: show the cricket ground in read-only mode with last-ball hint -->
+        <div class="card waiting" *ngIf="!activeWindow()">
+          <div class="waiting-head">
+            <h3>Waiting for the next decision window…</h3>
+            <p class="muted small">A new window opens after the next ball.</p>
+          </div>
+          <cs-ground [readOnly]="true" [fielders]="[]"></cs-ground>
         </div>
 
+        <!-- Result reveal -->
         <cs-reveal *ngIf="lastResult() as r" [result]="r"></cs-reveal>
       </section>
     </div>
   `,
   styles: [`
+    /* ---------- Empty state ---------- */
     .empty { text-align: center; padding: 3rem 1rem; }
-    .layout { display: grid; grid-template-columns: 280px 1fr; gap: 1rem; }
-    @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
-    .match-list { list-style: none; padding: 0; margin: 0; }
-    .match-list li { padding: 0.6rem 0.5rem; border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; }
-    .match-list li.active, .match-list li:hover { background: var(--panel-2); }
-    .small { font-size: 0.8rem; }
-    .scoreboard .teams h2 { margin: 0; }
-    .scores { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 0.75rem; }
-    .innings .team { color: var(--muted); }
-    .innings .runs { font-size: 1.6rem; font-weight: 700; }
-    .last-ball { margin-top: 0.35rem; }
+    .empty-emoji { font-size: 3rem; margin-bottom: 0.5rem; }
+
+    /* ---------- Layout ---------- */
+    .layout {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 1rem;
+      align-items: start;
+    }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+
+    .main { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+
+    /* ---------- Sidebar ---------- */
+    .sidebar-title { margin-top: 0; margin-bottom: 0.6rem; }
+    .match-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+    .match-list li {
+      padding: 0.6rem 0.75rem; border-radius: 10px; cursor: pointer;
+      display: flex; flex-direction: column; gap: 0.2rem;
+      border: 1.5px solid transparent;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .match-list li:hover { background: var(--panel-2); }
+    .match-list li.active {
+      background: linear-gradient(135deg, rgba(255,122,24,0.12), rgba(255,209,102,0.05));
+      border-color: var(--accent);
+    }
+    .teams-row { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+    .teams-row .vs { color: var(--muted); font-size: 0.75rem; }
+    .small { font-size: 0.78rem; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); margin-right: 0.35rem; vertical-align: middle; }
+    .dot.live { background: var(--danger); box-shadow: 0 0 6px var(--danger); animation: pulse 1.4s infinite; }
+
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+
+    /* ---------- Scoreboard ---------- */
+    .scoreboard .header {
+      display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+    }
+    .scoreboard h2 { margin: 0; font-size: 1.4rem; }
+    .scoreboard h2 .muted { font-weight: 500; }
+    .status-pill {
+      padding: 0.25rem 0.7rem; border-radius: 999px; font-size: 0.7rem; font-weight: 700;
+      letter-spacing: 1px; background: var(--panel-2); color: var(--muted);
+    }
+    .status-pill[data-status="LIVE"] { background: rgba(248,113,113,0.15); color: #fca5a5; }
+    .status-pill[data-status="COMPLETED"] { background: rgba(74,222,128,0.15); color: #86efac; }
+
+    .innings-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+    .innings-card {
+      background: var(--panel-2);
+      border-radius: 10px;
+      padding: 0.75rem 1rem;
+      display: flex; flex-direction: column; gap: 0.25rem;
+    }
+    .inn-team { font-size: 0.85rem; letter-spacing: 0.5px; text-transform: uppercase; }
+    .inn-runs { font-size: 1.8rem; font-weight: 800; line-height: 1; display: flex; align-items: baseline; gap: 0.15rem; }
+    .inn-runs .slash { color: var(--muted); }
+    .inn-runs .wkts { color: var(--danger); }
+    .inn-runs .inn-overs { font-size: 0.85rem; font-weight: 500; margin-left: 0.4rem; }
+    .inn-last { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; font-size: 0.85rem; margin-top: 0.3rem; }
+    .runs-chip {
+      min-width: 22px; height: 22px; padding: 0 6px; border-radius: 6px;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.8rem;
+      background: var(--panel); border: 1px solid var(--border);
+    }
+    .runs-chip[data-runs="0"] { color: var(--muted); }
+    .runs-chip[data-runs="4"] { background: rgba(74,222,128,0.2); border-color: var(--success); color: var(--success); }
+    .runs-chip[data-runs="6"] { background: rgba(255,122,24,0.25); border-color: var(--accent); color: var(--accent-2); }
+    .runs-chip.wicket { background: rgba(248,113,113,0.25); border-color: var(--danger); color: #fca5a5; }
+
+    .ball-strip {
+      margin-top: 0.85rem;
+      display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;
+    }
+    .ball-strip .chips { display: flex; gap: 0.3rem; }
+    .ball-chip {
+      width: 26px; height: 26px; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: var(--panel-2); border: 1px solid var(--border);
+      font-size: 0.78rem; font-weight: 700;
+    }
+    .ball-chip[data-runs="0"] { color: var(--muted); }
+    .ball-chip[data-runs="4"] { background: rgba(74,222,128,0.25); border-color: var(--success); color: var(--success); }
+    .ball-chip[data-runs="6"] { background: rgba(255,122,24,0.3);  border-color: var(--accent); color: var(--accent-2); }
+    .ball-chip.wicket { background: rgba(248,113,113,0.3); border-color: var(--danger); color: #fca5a5; }
+
+    /* ---------- Waiting card ---------- */
+    .waiting { display: flex; flex-direction: column; gap: 0.75rem; align-items: stretch; }
+    .waiting-head h3 { margin: 0; }
   `]
 })
 export class LiveMatchComponent implements OnInit, OnDestroy {
@@ -102,8 +241,21 @@ export class LiveMatchComponent implements OnInit, OnDestroy {
   state = signal<LiveState | null>(null);
   activeWindow = signal<WindowEvent | null>(null);
   secondsRemaining = signal(0);
+  windowLengthSeconds = signal(20);
   lastResult = signal<RevealResult | null>(null);
 
+  /** Last six balls in the most-recent innings, for the ball strip. */
+  lastBalls = computed<BallChip[]>(() => {
+    const s = this.state();
+    if (!s || !s.innings.length) return [];
+    const inn = s.innings[s.innings.length - 1];
+    if (!inn.lastBall) return [];
+    // Backend only returns the most recent ball in `lastBall`. We accumulate
+    // a small rolling window client-side as new balls arrive.
+    return this.rolling;
+  });
+
+  private rolling: BallChip[] = [];
   private subs: Subscription[] = [];
   private tickerSub?: Subscription;
 
@@ -123,6 +275,7 @@ export class LiveMatchComponent implements OnInit, OnDestroy {
 
   select(matchId: number): void {
     this.selectedMatchId.set(matchId);
+    this.rolling = [];
     this.refreshState(matchId);
 
     this.subs.forEach(s => s.unsubscribe());
@@ -145,11 +298,27 @@ export class LiveMatchComponent implements OnInit, OnDestroy {
   }
 
   refreshState(matchId: number): void {
-    this.matchSvc.matchState(matchId).subscribe(s => this.state.set(s));
+    this.matchSvc.matchState(matchId).subscribe(s => {
+      this.state.set(s);
+      this.appendBall(s);
+    });
+  }
+
+  private appendBall(s: LiveState): void {
+    if (!s.innings.length) return;
+    const inn = s.innings[s.innings.length - 1];
+    const lb = inn.lastBall;
+    if (!lb) return;
+    const chip: BallChip = { over: lb.over, ball: lb.ballInOver, runs: lb.runs, wicket: lb.wicket };
+    const last = this.rolling[this.rolling.length - 1];
+    if (last && last.over === chip.over && last.ball === chip.ball) return;
+    this.rolling = [...this.rolling, chip].slice(-6);
   }
 
   handleWindow(w: WindowEvent): void {
     this.activeWindow.set(w);
+    const total = Math.max(1, Math.round((+new Date(w.closesAt) - +new Date(w.opensAt)) / 1000));
+    this.windowLengthSeconds.set(total);
     this.secondsRemaining.set(w.secondsRemaining);
     this.tickerSub?.unsubscribe();
     this.tickerSub = interval(1000).subscribe(() => {
