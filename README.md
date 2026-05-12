@@ -15,22 +15,44 @@ loop on every single ball.
 
 ## 🔴 Live demo
 
-| What             | URL                                                   |
-| ---------------- | ----------------------------------------------------- |
-| **App**          | https://coachsim.apkzube.com                          |
-| Health           | https://coachsim.apkzube.com/actuator/health          |
+| What    | URL                                          |
+| ------- | -------------------------------------------- |
+| **App** | https://coachsim.apkzube.com                 |
+| Health  | https://coachsim.apkzube.com/actuator/health |
 
 > Demo accounts (seeded by Flyway on first boot):
 >
-> | Role  | Email                       | Password   |
-> | ----- | --------------------------- | ---------- |
-> | Admin | `admin@coachsim.local`      | `admin123` |
-> | Fan   | `rohit@coachsim.local`      | `fan1234`  |
-> | Fan   | `virat@coachsim.local`      | `fan1234`  |
-> | Fan   | `msd@coachsim.local`        | `fan1234`  |
-> | Fan   | `bumrah@coachsim.local`     | `fan1234`  |
+> | Role  | Email                   | Password   |
+> | ----- | ----------------------- | ---------- |
+> | Admin | `admin@coachsim.local`  | `admin123` |
+> | Fan   | `vpn123@gmail.com`      | `12345678` |
+> | Fan   | `rohit@coachsim.local`  | `fan1234`  |
+> | Fan   | `virat@coachsim.local`  | `fan1234`  |
+> | Fan   | `msd@coachsim.local`    | `fan1234`  |
+> | Fan   | `bumrah@coachsim.local` | `fan1234`  |
 >
 > Eleven fan accounts in total — pick any of `rohit / virat / msd / hardik / shubman / jadeja / iyer / kuldeep / bumrah / arshdeep` at `@coachsim.local` with password `fan1234`.
+
+> **Note on live data source.** CoachSim ships with a **real, production-ready
+> integration with [CricAPI v2](https://cricapi.com/)** — flip
+> `INGESTION_PROVIDER=external` in `devops/.env.prod` and the backend polls
+> `GET /v1/currentMatches` + `GET /v1/match_scorecard` to ingest real IPL
+> fixtures and coarse ball events. For **this demo**, however, we run the
+> stack with the built-in **admin auto-play simulator** (`INGESTION_PROVIDER=mock`
+> + the admin "Start auto-play" button), because:
+>
+> - CricAPI's free tier doesn't expose true ball-by-ball commentary — only
+>   total-runs deltas — so it can't drive the per-ball decision windows that
+>   make the demo interesting.
+> - The simulator emits a captain move on **every ball** with phase-aware
+>   variation, so every fan decision gets scored within seconds and the full
+>   tactical-merit loop is visible end-to-end without waiting for a real
+>   IPL fixture window.
+> - The same match can be **replayed unlimited times** via the admin's
+>   *Reset cursor* button — no DB cleanup required.
+>
+> The external adapter is fully wired; swapping providers is a single env-var
+> change + container restart with no client-side changes.
 
 ---
 
@@ -54,7 +76,7 @@ simulation, the fan plays along.
    loops on the same match).
 3. Pick a live match (e.g. **RCB vs GT** or **MI vs Chennai**) and click
    **Control**.
-4. Under *Auto-play simulation* set **Ball every (s)** (5 s is a good demo
+4. Under _Auto-play simulation_ set **Ball every (s)** (5 s is a good demo
    pace — gives fans enough time to tap their decision) and hit
    **Start auto-play**. The badge flips to **RUNNING**.
 5. The simulator now, every `ballEverySeconds`:
@@ -63,7 +85,7 @@ simulation, the fan plays along.
      middle), with a 30 % "surprise" rotation so the verdict varies.
    - Ingests the synthetic **ball** (weighted dot/single/four/six
      distribution, occasional wickets). This opens a fresh decision window
-     for the *next* ball, giving every connected fan one full tick to react.
+     for the _next_ ball, giving every connected fan one full tick to react.
 6. If you ever want to replay a match from scratch, hit **Reset cursor** —
    it wipes the ball history, decision windows, fan decisions and scores
    for that match in FK-safe order so the scoreboard restarts at 0/0 over 1.
@@ -76,11 +98,11 @@ account, e.g. **`rohit@coachsim.local` / `fan1234`**.
 
 1. The **Live** page auto-selects the running match. The left sidebar lists
    every live fixture; the main column shows the scoreboard, the last ball,
-   and a *Recent balls* strip (last six balls with run/wicket chips).
+   and a _Recent balls_ strip (last six balls with run/wicket chips).
 2. A **sticky score banner** at the top pins your running tactical merit for
    this match (total, decisions scored / pending, average, best, last score
-   + rule breakdown). The number flashes a green **+N** the instant a new
-   score arrives over WebSocket.
+   - rule breakdown). The number flashes a green **+N** the instant a new
+     score arrives over WebSocket.
 3. When the simulator opens a decision window, the **Decision Panel** card
    appears below the scoreboard with:
    - A circular **SVG countdown timer**.
@@ -114,7 +136,7 @@ account, e.g. **`rohit@coachsim.local` / `fan1234`**.
 - **Stale windows after a replay** — Reset wipes the full decision graph,
   not just balls, so the 20-over cap can be re-played indefinitely.
 - **Captain move closing windows instantly** — the captain move for ball
-  *N+1* is published in the *next* tick (not the same tick as ball *N*), so
+  _N+1_ is published in the _next_ tick (not the same tick as ball _N_), so
   each window stays open for the entire countdown the fan sees.
 - **Session lapses** — `/api/matches/{id}/state` is fully public, so the
   scoreboard renders even before sign-in or with an expired JWT; protected
@@ -124,20 +146,20 @@ account, e.g. **`rohit@coachsim.local` / `fan1234`**.
 
 ## Tech stack
 
-| Layer            | Technology                                                                 |
-| ---------------- | -------------------------------------------------------------------------- |
-| **Backend**      | Spring Boot 3 · Java 21 · Gradle 8                                         |
-| Persistence      | Spring Data JPA + Hibernate · Flyway · PostgreSQL 16 · Ehcache (JPA L2)    |
-| Realtime         | Spring WebSocket + STOMP (`/ws`, topics `/topic/match.{id}`, user queues)  |
-| AuthN/Z          | Spring Security · JWT (JJWT) · BCrypt · `ROLE_ADMIN` method-level guards   |
-| Ingestion        | Pluggable `MatchDataProvider`: `mock` · `external` (CricAPI v2) · `auto-play` simulator |
-| Scoring          | Rules engine — `ExactMatchRule` · `HistoricalEconomyRule` · `FieldCoverageRule` |
-| Observability    | Spring Actuator · Micrometer + Prometheus · Logstash JSON logs             |
-| **Frontend**     | Angular 17 (standalone components, signals) · TypeScript                   |
-| UI               | Custom SVG cricket ground · sticky live banner · STOMP via `@stomp/rx-stomp` |
-| **Infra**        | Docker · Docker Compose (base + dev / prod overlays)                       |
-| Edge (prod)      | Traefik v2 (external instance) · Let's Encrypt HTTP-01 · sticky cookies for WS · inline rate-limit + security headers |
-| Edge (dev)       | Frontend `nginx` is the single host entrypoint — proxies `/api` and `/ws` to the backend over the compose network |
+| Layer         | Technology                                                                                                            |
+| ------------- | --------------------------------------------------------------------------------------------------------------------- |
+| **Backend**   | Spring Boot 3 · Java 21 · Gradle 8                                                                                    |
+| Persistence   | Spring Data JPA + Hibernate · Flyway · PostgreSQL 16 · Ehcache (JPA L2)                                               |
+| Realtime      | Spring WebSocket + STOMP (`/ws`, topics `/topic/match.{id}`, user queues)                                             |
+| AuthN/Z       | Spring Security · JWT (JJWT) · BCrypt · `ROLE_ADMIN` method-level guards                                              |
+| Ingestion     | Pluggable `MatchDataProvider`: `mock` · `external` (CricAPI v2) · `auto-play` simulator                               |
+| Scoring       | Rules engine — `ExactMatchRule` · `HistoricalEconomyRule` · `FieldCoverageRule`                                       |
+| Observability | Spring Actuator · Micrometer + Prometheus · Logstash JSON logs                                                        |
+| **Frontend**  | Angular 17 (standalone components, signals) · TypeScript                                                              |
+| UI            | Custom SVG cricket ground · sticky live banner · STOMP via `@stomp/rx-stomp`                                          |
+| **Infra**     | Docker · Docker Compose (base + dev / prod overlays)                                                                  |
+| Edge (prod)   | Traefik v2 (external instance) · Let's Encrypt HTTP-01 · sticky cookies for WS · inline rate-limit + security headers |
+| Edge (dev)    | Frontend `nginx` is the single host entrypoint — proxies `/api` and `/ws` to the backend over the compose network     |
 
 ---
 
