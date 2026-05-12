@@ -3,11 +3,12 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { Subscription, interval } from 'rxjs';
-import { MatchService, MatchSummary, LiveState, WindowView, BallView } from '../../core/match.service';
+import { MatchService, MatchSummary, LiveState, WindowView, BallView, MyScore } from '../../core/match.service';
 import { WebSocketService } from '../../core/websocket.service';
 import { DecisionPanelComponent, DecisionPayload } from './decision-panel.component';
 import { RevealComponent, RevealResult } from './reveal.component';
 import { GroundComponent } from './ground.component';
+import { LiveScoreBannerComponent } from './live-score-banner.component';
 
 interface WindowEvent {
   windowId: number;
@@ -30,17 +31,39 @@ interface BallChip {
 @Component({
   selector: 'cs-live-match',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, DecisionPanelComponent, RevealComponent, GroundComponent],
+  imports: [
+    CommonModule, FormsModule, RouterLink,
+    DecisionPanelComponent, RevealComponent, GroundComponent, LiveScoreBannerComponent,
+  ],
   template: `
+    <!-- Skeleton while the first match list is loading. Without it the page
+         would be momentarily blank on slow connections / cold backend
+         startup, which the demo reported as "the live page isn't showing". -->
+    <div *ngIf="loading()" class="skeleton card">
+      <div class="bar lg"></div>
+      <div class="bar sm"></div>
+      <div class="bar md"></div>
+    </div>
+
+    <!-- Visible failure card instead of an empty page when the backend
+         answers with anything other than success. Has a retry CTA so users
+         can self-recover without a full page reload. -->
+    <div *ngIf="!loading() && loadError() as err" class="error card">
+      <div class="error-emoji">⚠️</div>
+      <h3>Couldn't load the live match</h3>
+      <p class="muted">{{ err }}</p>
+      <button (click)="reloadLiveMatches()">Try again</button>
+    </div>
+
     <!-- Empty state -->
-    <div *ngIf="matches().length === 0" class="empty card">
+    <div *ngIf="!loading() && !loadError() && matches().length === 0" class="empty card">
       <div class="empty-emoji">🏏</div>
       <h3>No live matches right now</h3>
       <p class="muted">Check back during an IPL fixture, or ask an admin to spin up a mock match from the
         <a routerLink="/admin">Admin panel</a>.</p>
     </div>
 
-    <div *ngIf="matches().length > 0" class="layout">
+    <div *ngIf="!loading() && !loadError() && matches().length > 0" class="layout">
 
       <!-- =================== Sidebar: match picker =================== -->
       <aside class="card sidebar">
@@ -64,6 +87,13 @@ interface BallChip {
 
       <!-- =================== Main column =================== -->
       <section class="main">
+
+        <!-- Sticky running-score banner (the user-facing summary the demo
+             wants pinned at the top of the live match page). -->
+        <cs-live-score-banner
+          [score]="myScore()"
+          [delta]="lastDelta()">
+        </cs-live-score-banner>
 
         <!-- Scoreboard -->
         <div class="card scoreboard" *ngIf="state() as s">
@@ -132,9 +162,23 @@ interface BallChip {
     </div>
   `,
   styles: [`
-    /* ---------- Empty state ---------- */
-    .empty { text-align: center; padding: 3rem 1rem; }
-    .empty-emoji { font-size: 3rem; margin-bottom: 0.5rem; }
+    /* ---------- Empty / error / skeleton ---------- */
+    .empty, .error { text-align: center; padding: 3rem 1rem; }
+    .empty-emoji, .error-emoji { font-size: 3rem; margin-bottom: 0.5rem; }
+    .error { border: 1px solid rgba(248,113,113,0.4); }
+    .error button { margin-top: 0.75rem; }
+
+    .skeleton { padding: 2rem; }
+    .skeleton .bar {
+      height: 14px; border-radius: 7px; margin: 0.8rem 0;
+      background: linear-gradient(90deg, var(--panel-2) 0%, var(--panel) 50%, var(--panel-2) 100%);
+      background-size: 200% 100%;
+      animation: shimmer 1.2s infinite linear;
+    }
+    .skeleton .bar.lg { width: 60%; height: 22px; }
+    .skeleton .bar.md { width: 45%; }
+    .skeleton .bar.sm { width: 30%; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
     /* ---------- Layout ---------- */
     .layout {
@@ -244,6 +288,20 @@ export class LiveMatchComponent implements OnInit, OnDestroy {
   windowLengthSeconds = signal(20);
   lastResult = signal<RevealResult | null>(null);
 
+  /**
+   * Surfaces problems on the live page that previously produced silent
+   * "blank scoreboard" symptoms: live-list fetch failing, state fetch
+   * failing (e.g. quiet 401), or the match-list arriving empty.
+   */
+  loading = signal(true);
+  loadError = signal<string | null>(null);
+
+  /** Running per-match tactical merit for the current user. */
+  myScore = signal<MyScore | null>(null);
+
+  /** Transient delta (the "+N" that flashes on the banner after each score). */
+  lastDelta = signal<number | null>(null);
+
   /** Last six balls in the most-recent innings, for the ball strip. */
   lastBalls = computed<BallChip[]>(() => {
     const s = this.state();
@@ -260,12 +318,41 @@ export class LiveMatchComponent implements OnInit, OnDestroy {
   private tickerSub?: Subscription;
 
   ngOnInit(): void {
-    this.matchSvc.liveMatches().subscribe(ms => {
-      this.matches.set(ms);
-      if (ms.length && this.selectedMatchId() === null) this.select(ms[0].id);
-    });
+    this.reloadLiveMatches();
 
-    this.subs.push(this.ws.watchMyResults<RevealResult>().subscribe(r => this.lastResult.set(r)));
+    // Global subscription kept across match switches: react to every per-user
+    // decision-result push by both showing the reveal AND folding it into the
+    // running banner (which lives at the top of the page).
+    this.subs.push(this.ws.watchMyResults<RevealResult>().subscribe(r => this.handleResult(r)));
+  }
+
+  /**
+   * Pulls the current live-match list. Always sets `loading` to false at the
+   * end so the template can stop showing the skeleton even if the request
+   * fails — that failure produces a visible retry banner instead of a blank
+   * page.
+   */
+  reloadLiveMatches(): void {
+    this.loading.set(true);
+    this.loadError.set(null);
+    this.matchSvc.liveMatches().subscribe({
+      next: ms => {
+        this.matches.set(ms);
+        if (ms.length && this.selectedMatchId() === null) this.select(ms[0].id);
+        this.loading.set(false);
+      },
+      error: e => {
+        this.loadError.set(this.formatError(e, 'live matches'));
+        this.loading.set(false);
+      },
+    });
+  }
+
+  private formatError(e: unknown, what: string): string {
+    const status = (e as { status?: number })?.status;
+    if (status === 0) return `Can't reach the server. Check your connection and try again.`;
+    if (status === 401) return `Your session expired — please sign in again.`;
+    return `Couldn't load ${what} (HTTP ${status ?? '???'}). Try refreshing.`;
   }
 
   ngOnDestroy(): void {
@@ -277,13 +364,14 @@ export class LiveMatchComponent implements OnInit, OnDestroy {
     this.selectedMatchId.set(matchId);
     this.rolling = [];
     this.refreshState(matchId);
+    this.refreshMyScore(matchId);
 
     this.subs.forEach(s => s.unsubscribe());
     this.subs = [];
 
     this.subs.push(this.ws.watchMatch(matchId).subscribe(() => this.refreshState(matchId)));
     this.subs.push(this.ws.watchWindows<WindowEvent>(matchId).subscribe(w => this.handleWindow(w)));
-    this.subs.push(this.ws.watchMyResults<RevealResult>().subscribe(r => this.lastResult.set(r)));
+    this.subs.push(this.ws.watchMyResults<RevealResult>().subscribe(r => this.handleResult(r)));
 
     this.matchSvc.openWindows(matchId).subscribe((ws: WindowView[]) => {
       if (ws.length) {
@@ -297,10 +385,63 @@ export class LiveMatchComponent implements OnInit, OnDestroy {
     });
   }
 
+  /** Seed the banner from the server's authoritative aggregate. */
+  private refreshMyScore(matchId: number): void {
+    this.matchSvc.myScore(matchId).subscribe({
+      next: s => this.myScore.set(s),
+      // Anonymous mid-load — don't blow up the page, just leave the banner empty.
+      error: () => this.myScore.set(null),
+    });
+  }
+
+  /**
+   * Fold a per-user reveal into both the reveal card AND the running banner.
+   * The banner total is incremented optimistically (so the user sees the "+N"
+   * pulse the instant the WS message lands, instead of waiting for the
+   * leaderboard service to refresh).
+   */
+  private handleResult(r: RevealResult): void {
+    this.lastResult.set(r);
+
+    const prev = this.myScore();
+    const matchId = this.selectedMatchId();
+    if (!matchId) return;
+
+    const merged: MyScore = prev ? {
+      ...prev,
+      totalScore: prev.totalScore + r.score,
+      decisionsScored: prev.decisionsScored + 1,
+      decisionsPending: Math.max(0, prev.decisionsPending - 1),
+      averageScore: (prev.totalScore + r.score) / (prev.decisionsScored + 1),
+      bestScore: Math.max(prev.bestScore, r.score),
+      lastScore: r.score,
+      lastBreakdown: r.breakdown,
+      lastScoredAt: new Date().toISOString(),
+    } : {
+      matchId,
+      totalScore: r.score,
+      decisionsScored: 1,
+      decisionsPending: 0,
+      averageScore: r.score,
+      bestScore: r.score,
+      lastScore: r.score,
+      lastBreakdown: r.breakdown,
+      lastScoredAt: new Date().toISOString(),
+    };
+    this.myScore.set(merged);
+    this.lastDelta.set(r.score);
+  }
+
   refreshState(matchId: number): void {
-    this.matchSvc.matchState(matchId).subscribe(s => {
-      this.state.set(s);
-      this.appendBall(s);
+    this.matchSvc.matchState(matchId).subscribe({
+      next: s => {
+        this.state.set(s);
+        this.appendBall(s);
+        this.loadError.set(null);
+      },
+      // Surface state-fetch failures (e.g. backend restart, network blip) so
+      // the user gets a clear retry CTA instead of a perpetually empty page.
+      error: e => this.loadError.set(this.formatError(e, 'this match')),
     });
   }
 

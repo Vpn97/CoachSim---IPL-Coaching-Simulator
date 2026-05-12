@@ -144,6 +144,20 @@ public class AdminController {
         return new AutoPlayStatus(id, simulator.isRunning(id));
     }
 
+    /**
+     * Bulk variant — used by the admin UI to render a "RUNNING" badge against
+     * every LIVE match in one round trip, so a refresh / second-tab open
+     * immediately shows which matches already have an auto-play loop active
+     * (prevents accidentally starting a duplicate simulation).
+     */
+    @GetMapping("/auto-play")
+    public Map<Long, Boolean> autoPlayStatusAll() {
+        return matches.findByStatusOrderByStartsAtAsc(Match.Status.LIVE).stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        Match::getId,
+                        m -> simulator.isRunning(m.getId())));
+    }
+
     @PostMapping("/captain-move")
     public ResponseEntity<Void> pushCaptainMove(@Valid @RequestBody CaptainRequest req) {
         MatchEvent ev = MatchEvent.builder()

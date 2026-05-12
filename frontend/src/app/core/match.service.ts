@@ -77,4 +77,28 @@ export class MatchService {
   myHistory(): Observable<unknown[]> {
     return this.http.get<unknown[]>('/api/decisions/history');
   }
+
+  /** Running tactical-merit snapshot for the current user in a single match. */
+  myScore(matchId: number): Observable<MyScore> {
+    return this.http.get<MyScore>(`/api/decisions/my-score?matchId=${matchId}`);
+  }
+}
+
+export interface ScoreBreakdown {
+  totalPoints: number;
+  maxPoints: number;
+  normalised: number;
+  rules: { rule: string; points: number; maxPoints: number; detail: string }[];
+}
+
+export interface MyScore {
+  matchId: number;
+  totalScore: number;
+  decisionsScored: number;
+  decisionsPending: number;
+  averageScore: number;
+  bestScore: number;
+  lastScore: number | null;
+  lastBreakdown: ScoreBreakdown | null;
+  lastScoredAt: string | null;
 }

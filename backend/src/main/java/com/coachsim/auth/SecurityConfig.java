@@ -42,7 +42,12 @@ public class SecurityConfig {
                     "/api/public/**",
                     "/api/leaderboard/**",
                     "/api/matches",
-                    "/api/matches/*",
+                    // Read-only match data (list, by id, state, …) is fully
+                    // public so the live scoreboard renders even before sign-in
+                    // and survives a quietly-expired JWT. Single-segment "*"
+                    // does NOT match nested paths like "/api/matches/1/state",
+                    // so we explicitly include "/**" here.
+                    "/api/matches/**",
                     "/actuator/health/**",
                     "/actuator/info",
                     "/actuator/prometheus",
